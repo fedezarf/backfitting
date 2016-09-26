@@ -1,0 +1,517 @@
+---
+title: "StatLearn2"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(mgcv)
+library(foreach)    # install.packages('foreach')
+library(caret)      # install.packages('caret', dependencies = c("Depends", "Suggests"))
+library(doParallel) # install.packages('doParallel')
+library(SAM)
+registerDoParallel(makeCluster(4))
+```
+
+## Homework 2 - Part 2
+
+As requested for the first point we proceeded to write down the code for the Backfitting algorithm. We chose the smooth.spline implementation. 
+
+```{r backfitting, eval=TRUE}
+
+#Function to speed up the Residuals computation
+
+res=function(f,y,alpha){
+  if (is.matrix(f)){return((y-alpha-rowSums(f)))}
+  (y-alpha-f)
+}
+
+#Stop parameter
+to1=1e-6
+
+# Smooth.spline for BACK FITTING -----------------------------------------------------------
+
+backfitting.spline <- function(x,y) {
+  #Mean of the ys
+  alpha= mean(y)
+  n=length(y)
+  p=ncol(x)
+  f.hat= matrix(0,nrow=n,ncol=p)
+  rss0=sum(res(f.hat,y,alpha)^2)
+  iter=0
+  while(T){
+    iter=iter+1
+      for(j in 1:p) {
+        r.j <- res(f.hat[,-j],y,alpha)
+        mod <- smooth.spline(x[,j],r.j)
+        f.hat[,j] <- predict(mod,x[,j])$y
+        f.hat[,j] = f.hat[,j] - mean(f.hat[,j])
+    }
+  rss=sum(res(f.hat,y,alpha)^2)
+  if (abs(rss-rss0)<to1*rss){
+    return(f.hat)
+  }
+  else{
+    rss0=rss
+  }
+  }
+}
+```
+
+
+
+\newpage 
+
+
+We now proceed to make a comparison between our algorithm and the gam algorithm of the mgcv library.
+
+```{r pressure, echo=TRUE, echo=FALSE}
+
+
+#Load the data
+load("ore.RData")
+
+
+ore.gam <- gam(width ~ s(t1) + s(t2), data = ore)
+plot(ore.gam, pages = 1)
+
+y=ore$width
+alpha=mean(y)
+x=matrix(data = c(ore$t1,ore$t2),ncol = 2)
+back.spline <- backfitting.spline(x,ore$width)
+x2=ore$t2
+
+
+####  CONFRONTI 
+
+# VS DATA
+plot(ore$t1,y)
+lines(ore$t1,back.spline[,1]+alpha)
+
+plot(x2,y)
+idx=order(x2)
+lines(x2[idx],back.spline[idx,2]+alpha)
+
+#VS LIBRARY
+plot(ore.gam,select = 1)
+lines(ore$t1,back.spline[,1],col='red')
+
+plot(ore.gam,select = 2)
+lines(x2[idx],back.spline[idx,2],col='red')
+
+
+```
+
+```{r msespline, eval=TRUE, echo=TRUE}
+#MSE
+#MSE
+MSE.gam=mean((ore.gam$residuals)^2)
+MSE.back.spline=mean((rowSums(back.spline)+mean(y)-y)^2)
+
+MSE.gam
+MSE.back.spline
+
+```
+
+
+We can see how the MSE of our backfitting algorithm is better than the gam package. But, looking at the plots, we can notice that we are interpolating the data. Now that we tried smooth.spline maybe locfit will give us more [**satisfaction**]("https://www.youtube.com/watch?v=nrIPxlFzDi0")
+
+```{r locfit, eval=TRUE}
+# Locfit for BACK FITTING -----------------------------------------------------------
+library(locfit)
+
+opt.loc.fit=function(x,y){
+  alpha.seq = seq(0.11, 1, by = 0.05)
+  #cv scores  
+  GCV0 = gcvplot(y ~ x,alpha = alpha.seq, deg = 0)
+  GCV1 = gcvplot(y ~ x,alpha = alpha.seq, deg = 1)
+  GCV2 = gcvplot(y ~ x,alpha = alpha.seq, deg = 2)
+  GCV3 = gcvplot(y ~ x,alpha = alpha.seq, deg = 3)
+  
+  # Choose the best
+  GCV.val <- cbind( GCV0$values, GCV1$values, GCV2$values, GCV3$values )
+  GCV.min <- apply(GCV.val, 2, min) 
+  
+  # best poly degree
+  deg.sel <- which.min(GCV.min)-1
+  GCV.ord <- apply(GCV.val, 2, which.min)
+  alpha.sel <- alpha.seq[ GCV.ord[which.min(GCV.min)] ] 
+  
+  # Optimal fit
+  lpfit = locfit(y ~ lp(x), alpha = alpha.sel, deg = as.numeric(deg.sel))
+  return(lpfit)
+}
+
+backfitting.locfit <- function(x,y) {
+  alpha= mean(y)
+  n=length(y)
+  p=ncol(x)
+  f.hat= matrix(0,nrow=n,ncol=p)
+  rss0=sum(res(f.hat,y,alpha)^2)
+  iter=0
+  while(T){
+    iter=iter+1
+    for(j in 1:p) {
+      r.j <- res(f.hat[,-j],y,alpha)
+      mod <- opt.loc.fit(x[,j],r.j)
+      f.hat[,j] <- predict(mod,x[,j])
+      f.hat[,j] = f.hat[,j] - mean(f.hat[,j])
+    }
+    rss=sum(res(f.hat,y,alpha)^2)
+    if (abs(rss-rss0)<to1*rss){
+      return(f.hat)
+    }
+    else{
+      rss0=rss
+    }
+  }
+}
+
+
+
+```
+
+
+
+```{r locplot, eval=TRUE, echo=FALSE}
+y=ore$width
+alpha=mean(y)
+x=matrix(data = c(ore$t1,ore$t2),ncol = 2)
+back.locfit <- backfitting.locfit(x,ore$width)
+x2=ore$t2
+
+####  
+
+# VS DATA
+plot(ore$t1,y)
+lines(ore$t1,back.locfit[,1]+alpha)
+
+plot(x2,y)
+idx=order(x2)
+lines(x2[idx],back.locfit[idx,2]+alpha)
+
+#VS LIBRARY
+plot(ore.gam,select = 1)
+lines(ore$t1,back.locfit[,1],col='red')
+
+plot(ore.gam,select = 2)
+lines(x2[idx],back.locfit[idx,2],col='red')
+
+
+
+```
+
+```{r mseloc, eval=TRUE, echo=TRUE}
+
+#MSE
+MSE.gam=mean((ore.gam$residuals)^2)
+MSE.back.locfit=mean((rowSums(back.locfit)+mean(y)-y)^2)
+
+MSE.gam
+MSE.back.locfit
+
+```
+
+The plots of locfit are way better and the MSE is almost equal to the gam library! We think we find our model.
+
+Now we can implement the SPAM algorithm
+
+
+```{r spam, eval=TRUE, echo=TRUE}
+spam <- function(x,y,lambda,to1=1e-6) {
+  alpha= mean(y)
+  n=length(y)
+  p=ncol(x)
+  f.hat= matrix(0,nrow=n,ncol=p)
+  rss_0=mean((y-alpha-rowSums(f.hat))^2)
+  df_list <- c()
+  stop=T
+  list_soft=c()
+  while(stop) {
+    for(j in 1:p) {
+      # Residuals
+      r.j <- y-alpha-(rowSums(f.hat[,-j]))
+      # Smoothing
+      mod <- smooth.spline(x[,j],r.j)
+      # Prediction
+      u.j <- predict(mod,x[,j])$y
+      # We save the degree of freedom for every j
+      df_list[j]=mod$df
+      # l2-norm
+      l <- mean(u.j**2)
+      # We define the soft thresholding
+      soft = 1 - (lambda / sqrt(l))
+      # We save the soft thresholding for every j
+      list_soft[j]=soft
+      # Keep or kill
+      f.hat[,j] = (soft>0)*u.j-mean((soft>0)*u.j)
+      
+    }
+    rss=mean((y-alpha-rowSums(f.hat))^2)
+    if (abs(rss-rss_0)<to1*rss || rss>rss_0){
+      print(rss)
+      return (list(f.hat=f.hat, soft=list_soft))
+    }
+    else{rss_0=rss}
+    
+  }
+  
+}
+```
+
+
+```{r gen, eval=TRUE, echo=TRUE}
+# Generating training data
+n = 150; d = 200
+X.tr = 0.5*matrix(runif(n*d),n,d) + matrix(rep(0.5*runif(n),d),n,d)
+# Generating response
+y.tr = -2*sin(X.tr[,1]) + X.tr[,2]^2-1/3 + X.tr[,3]-1/2 + exp(-X.tr[,4]) + exp(-1)-1
+# Generating testing data
+n = 500; d = 200
+X.te = 0.5*matrix(runif(n*d),n,d) + matrix(rep(0.5*runif(n),d),n,d)
+# Generating response
+y.te = -2*sin(X.te[,1]) + X.te[,2]^2-1/3 + X.te[,3]-1/2 + exp(-X.te[,4]) + exp(-1)-1
+
+```
+
+
+We are gonna use the 10-fold CV in order to find our lambda. To speed up the computation we paralelized each fold evaluation. 
+
+
+```{r spampar, echo=TRUE}
+
+
+data <- data.frame(y.tr, X.tr) # Our dataset 
+seq.lambda = seq(from=.1,to=0, length.out = 10) # The sequence of lambdas that we want to try
+cv <-createFolds(data[,1], k=10,list=T) # Create 10 folds
+
+res=c()
+k=1
+
+for (lambda in seq.lambda){
+  results <- foreach(fold = cv ) %dopar% { #Parallelization!
+    # Get the fold data 
+    data.train <- data[-as.data.frame(fold)[,1],] # Get the opposite of the test observations to train on
+    data.test <- data[as.data.frame(fold)[,1],]
+    
+    # Fit the model and make predictions
+    fit <- spam(as.matrix(data.train[,-1]), as.matrix(data.train[,1]), lambda=lambda)
+    
+    f.hat.pred= matrix(0,nrow=length(data.test[,1]),ncol=length(which(fit$f.hat[1,]!=0)))
+    l=1
+    
+    # For the j not killed
+    for (j in which(fit$f.hat[1,]!=0)){
+      y.pred <- predict( smooth.spline(data.train[,1+j] , data.train[,1]) , data.test[,1+j])$y
+      y.pred= y.pred * fit$soft[j]*(fit$soft[j]>0)
+      f.hat.pred[,l]=y.pred -mean(y.pred)
+      l=l+1
+    }
+    y.pred=mean(y.tr)+rowSums(f.hat.pred)
+    y.true <- data.test[,1]
+    MSE <- mean((y.pred-y.true)^2)
+    
+  }
+  res[k]=mean(unlist(results))
+  k=k+1
+}
+
+
+
+plot(seq.lambda, log(res),type='l')
+points(seq.lambda[which.min(res)],log(min(res)),col='red')
+#select best lambda 
+seq.lambda[which.min(res)]
+
+#selected covariates
+fit<- spam(as.matrix(data[,-1]), as.matrix(data[,1]), lambda=seq.lambda[which.min(res)])
+(1:200)[fit$f.hat[1,]!=0]
+
+```
+
+
+```{r plots vari per lambda}
+
+
+fits<- foreach(i = 1:10 ) %dopar% {
+  a=spam(as.matrix(data[,-1]), as.matrix(data[,1]), lambda=seq.lambda[i])
+}
+
+# plot lambda vs Softthreshold
+
+softs=list()
+for (i in 1:length(fits)){
+  softs[[i]]=fits[[i]]$soft
+}
+
+
+par(matrix(c(1,2),nrow=2,byrow=T),mai=c(0.5,1,0.5,1))
+plot(1,type='n',xlim=c(1,10),ylim=c(0,1),xlab='covariates',ylab='softtreshold value',main = 'covariates VS soft')
+for (i in 1:10){
+  lines(unlist(softs[i])*(unlist(softs[i])>0),col=rainbow(10)[i])
+}
+legend(5,0.9,legend=c(paste('lambda =',round(seq.lambda,2))),col=rainbow(10)[1:10],lty=1,bty='n')
+
+# each curve is a lambda
+
+plot(1,type='n',xlim=c(1,200),ylim=c(0,10),xlab='covariates',ylab='softtreshold value',main = 'covariates VS soft')
+for (i in 1:10){
+  lines(unlist(softs[i])*(unlist(softs[i])>0)+rep(i-1,200),col=rainbow(10)[i])
+}
+
+
+# plot predizione
+
+
+fit<- spam(as.matrix(data[,-1]), as.matrix(data[,1]), lambda=seq.lambda[which.min(res)])
+a <- fit$f.hat[1,]!=0
+
+x.sel.tr=X.tr[,a]
+x.sel.te=X.te[,a]
+
+f.hat.pred= matrix(0,nrow=length(x.sel.te[,1]),ncol=sum(a))
+l=1
+for (j in 1:sum(a)){
+  y.pred <- predict(smooth.spline(x.sel.tr[,j],y.tr),x.sel.te[,j])$y
+  y.pred= y.pred * fit$soft[a][j]
+  f.hat.pred[,j]=y.pred - mean(y.pred)
+}
+
+y.pred=mean(y.tr)+rowSums(f.hat.pred)
+MSE <- mean((y.pred-y.te)^2)
+
+plot(y.te,y.pred,main=paste('MSE',round(MSE)))
+
+
+# 4 funzioni contro le originali TRAINING
+
+
+par(matrix(c(1,2,3,4),nrow=2,byrow=T),mai=c(0.5,1,0.5,1))
+
+idx=order(X.tr[,1])
+plot(x= X.tr[idx,1],y= mean(y.tr) + fit$f.hat[idx,1],type='l')
+y.1=-2*sin(X.tr[,1])
+lines(X.tr[idx,1], y.1[idx], col = "red")
+
+y.2=sort(X.tr[,2]^2-1/3)
+idx=order(X.tr[,2])
+plot(X.tr[idx,2],y=fit$f.hat[idx,2],col='red')
+lines(X.tr[idx,2],y.2)
+
+y.3=sort(X.tr[,3]-1/2)
+idx=order(X.tr[,3])
+plot(X.tr[idx,3],y=fit$f.hat[idx,3],col='red')
+lines(X.tr[idx,3],y.3)
+
+y.4=exp(-X.tr[,4])-0.63
+idx=order(X.tr[,4])
+plot(X.tr[idx,4],y=fit$f.hat[idx,4],col='red')
+lines(X.tr[idx,4],y.4[idx])
+
+
+
+# 4 funzioni contro le originali TEST
+
+idx=order(X.te[,1])
+plot(x= X.te[idx,1],y= mean(y.tr) + f.hat.pred[idx,1],type='l')
+y.1=-2*sin(X.te[,1])
+lines(X.te[idx,1], y.1[idx], col = "red")
+
+y.2=sort(X.te[,2]^2-1/3)
+idx=order(X.te[,2])
+plot(X.te[idx,2],y.2,col='red',type='l')
+lines(X.te[idx,2],y=f.hat.pred[idx,2])
+
+y.3=sort(X.te[,3]-1/2)
+idx=order(X.te[,3])
+plot(X.te[idx,3],y=y.3,col='red',type='l')
+lines(X.te[idx,3],f.hat.pred[idx,3])
+
+y.4=exp(-X.te[,4])-0.63
+idx=order(X.te[,4])
+plot(X.te[idx,4],y.4[idx],col='red',type='l')
+lines(X.te[idx,4],y=f.hat.pred[idx,4])
+
+```
+
+SOooo y are generated as a sum of functions... but 
+y.tr = -2*sin(X.tr[,1]) + X.tr[,2]^2-1/3 + X.tr[,3]-1/2 + exp(-X.tr[,4]) + exp(-1)-1
+total costana = -1/3-1/2 + exp(-1)-1
+this value as to be splitted into the four components that we add to get the predictions ( that's why we choose -0.63 for the last one)
+
+```{r}
+
+
+# Libreria SAM  ----------------------------------------------------------------
+#----------------------------------------------------------------
+  
+library(SAM)
+
+gcv_sam=function(sam){
+  n=length(sam$X.min)
+  df=sam$df
+  sse=sam$sse
+  score=(sse/n)/((1-df/n)^2)
+  
+}
+
+# prova     ----------------------
+seq.lambda=seq(to=0,from=0.1,length.out = 100)
+sam=samQL(X.tr,y.tr,lambda = seq(to=0,from=0.1,length.out = 100))
+plot(colMeans((predict(samQL(X.tr,y.tr,lambda = seq(to=0,from=0.1,length.out = 100)),X.te)$value-y.te)^2))
+y.pred=predict(sam,X.te)$value
+#top lambda
+seq.lambda[which.min(colMeans(( y.pred - y.te)^2))]
+#activated covariates
+which(sam$func_norm[,1]!=0)
+
+```
+
+gcv scores incredibily works out, but we are cool and we implemented the 10-fold cv scores!
+
+```{r}
+
+# CV Parallellizzata ----------------
+
+
+#valori iniziali
+seq.lambda = seq(from=0.5,to=0, length.out = 10)
+
+
+results <- foreach(fold = cv , .packages='SAM') %dopar% {
+  # Get the fold data 
+  data.train <- data[-as.data.frame(fold)[,1],] # Get the opposite of the test observations to train on
+  data.test <- data[as.data.frame(fold)[,1],]
+  
+  # Fit the model and make predictions
+  fit <- samQL(data.train[,-1], data.train[,1], lambda=seq.lambda)
+  y.pred <- predict(fit, as.matrix(data.test[,-1]))$value
+  y.true <- data.test[,1]
+  MSE <- colMeans((data.frame(y.pred)-y.true)^2)
+  
+}
+
+res1=c()
+for (i in 1:10){
+  res1[i]=mean(results[[i]])
+}
+
+plot(seq.lambda,res1)
+
+#opt lambda
+seq.lambda[which.min(results[[1]])]
+
+sam=samQL(data[,-1], data[,1],lambda=seq.lambda[which.min(results[[1]])])
+which(sam$func_norm!=0)
+
+```
+
+
+
+
+
+
+
+
+
+
